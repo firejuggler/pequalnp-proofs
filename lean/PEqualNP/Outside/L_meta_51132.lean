@@ -44,11 +44,20 @@ def kids (L : List ℕ) : List ℕ :=
 def nkids (L : List ℕ) : List ℕ :=
   ((L.map fun x => 63 ^^^ x).filter fun v => !L.contains v).dedup
 
+def reachM (L : List ℕ) (t : ℕ) : Bool := L.any fun x => L.any fun y => x &&& y == t || x ||| y == t
+
+def reachN (L : List ℕ) (t : ℕ) : Bool := L.any fun x => 63 ^^^ x == t
+
 def srch : ℕ → ℕ → List ℕ → Bool
   | 0, _, L => tgt L
   | k + 1, n, L => tgt L || (decide (miss L ≤ k + 1) &&
-      ((kids L).any (fun v => srch k n (v :: L)) ||
-        (decide (0 < n) && (nkids L).any (fun v => srch k (n - 1) (v :: L)))))
+      (if miss L = k + 1 then
+        [tA, tB, tC].any (fun t => !L.contains t &&
+          ((reachM L t && srch k n (t :: L)) ||
+            (decide (0 < n) && reachN L t && srch k (n - 1) (t :: L))))
+      else
+        ((kids L).any (fun v => srch k n (v :: L)) ||
+          (decide (0 < n) && (nkids L).any (fun v => srch k (n - 1) (v :: L))))))
 
 theorem srch_miss : ∀ k n L, srch k n L = true → miss L ≤ k := by
   intro k
@@ -102,10 +111,50 @@ theorem mem_kids {L : List ℕ} {x y m : ℕ} (hx : x ∈ L) (hy : y ∈ L)
   refine ⟨List.mem_flatMap.2 ⟨x, hx, List.mem_flatMap.2 ⟨y, hy, ?_⟩⟩, by simpa using hin⟩
   simpa using hm
 
-theorem mem_nkids {L : List ℕ} {x : ℕ} (hx : x ∈ L) (hin : 63 ^^^ x ∉ L) : 63 ^^^ x ∈ nkids L := by
+theorem mem_nkids {L : List ℕ} {x m : ℕ} (hx : x ∈ L) (hm : m = 63 ^^^ x) (hin : m ∉ L) : m ∈ nkids L := by
+  subst hm
   unfold nkids
   rw [List.mem_dedup, List.mem_filter]
   exact ⟨List.mem_map.2 ⟨x, hx, rfl⟩, by simpa using hin⟩
+
+theorem reachM_of {L : List ℕ} {x y t : ℕ} (hx : x ∈ L) (hy : y ∈ L)
+    (h : t = x &&& y ∨ t = x ||| y) : reachM L t = true := by
+  unfold reachM
+  simp only [List.any_eq_true, Bool.or_eq_true, beq_iff_eq]
+  exact ⟨x, hx, y, hy, h.imp Eq.symm Eq.symm⟩
+
+theorem reachN_of {L : List ℕ} {x t : ℕ} (hx : x ∈ L) (h : t = 63 ^^^ x) : reachN L t = true := by
+  unfold reachN
+  simp only [List.any_eq_true, beq_iff_eq]
+  exact ⟨x, hx, h.symm⟩
+
+theorem tight_target {L : List ℕ} {v : ℕ} (h : miss (v :: L) < miss L) : v = tA ∨ v = tB ∨ v = tC := by
+  by_contra hc
+  push_neg at hc
+  obtain ⟨ha, hb, hc⟩ := hc
+  unfold miss at h
+  rw [m1_ne _ _ _ (Ne.symm ha), m1_ne _ _ _ (Ne.symm hb), m1_ne _ _ _ (Ne.symm hc)] at h
+  omega
+
+theorem srch_tight {k n : ℕ} {L : List ℕ} (h1 : miss L = k + 1) (t : ℕ) (ht : t = tA ∨ t = tB ∨ t = tC)
+    (hn : t ∉ L)
+    (h : (reachM L t = true ∧ srch k n (t :: L) = true) ∨
+      (0 < n ∧ reachN L t = true ∧ srch k (n - 1) (t :: L) = true)) : srch (k + 1) n L = true := by
+  have hc : L.contains t = false := by simpa using hn
+  unfold srch
+  simp only [h1, le_refl, decide_true, Bool.true_and, ↓reduceIte, Bool.or_eq_true, List.any_eq_true]
+  right
+  refine ⟨t, by rcases ht with rfl | rfl | rfl <;> simp, ?_⟩
+  simp only [Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true', decide_eq_true_eq]
+  exact ⟨hc, h.imp (fun a => a) (fun a => ⟨⟨a.1, a.2.1⟩, a.2.2⟩)⟩
+
+theorem srch_loose {k n : ℕ} {L : List ℕ} (h0 : miss L ≤ k + 1) (h1 : miss L ≠ k + 1)
+    (h : (∃ v ∈ kids L, srch k n (v :: L) = true) ∨
+      (0 < n ∧ ∃ v ∈ nkids L, srch k (n - 1) (v :: L) = true)) : srch (k + 1) n L = true := by
+  unfold srch
+  simp only [h1, ↓reduceIte, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true]
+  right
+  exact ⟨h0, h⟩
 
 theorem and31 : ∀ a < 64, a &&& 63 = a := by decide
 
@@ -155,7 +204,8 @@ theorem getD_mem (cs : List ℕ) (i : ℕ) (hi : i < cs.length) : cs.getD i 0 �
 theorem gv_reach (g : Gate) (cs L : List ℕ) (hop : okOp g) (hl : g.inputs.length ≤ 2)
     (hin : ∀ i ∈ g.inputs, i < cs.length) (hlt : ∀ x ∈ cs, x < 64) (hsub : ∀ x ∈ cs, x ∈ L)
     (h31 : 63 ∈ L) (h0 : 0 ∈ L) :
-    gv g cs ∈ L ∨ (g.op ≠ .not ∧ gv g cs ∈ kids L) ∨ (g.op = .not ∧ gv g cs ∈ nkids L) := by
+    gv g cs ∈ L ∨ (g.op ≠ .not ∧ ∃ x ∈ L, ∃ y ∈ L, gv g cs = x &&& y ∨ gv g cs = x ||| y) ∨
+      (g.op = .not ∧ ∃ x ∈ L, gv g cs = 63 ^^^ x) := by
   obtain ⟨op, l⟩ := g
   simp only [okOp] at hop
   simp only at hl hin ⊢
@@ -172,10 +222,7 @@ theorem gv_reach (g : Gate) (cs L : List ℕ) (hop : okOp g) (hl : g.inputs.leng
       have e : gv ⟨.and, [i, j]⟩ cs = cs.getD i 0 &&& cs.getD j 0 := by
         show cs.getD i 0 &&& (cs.getD j 0 &&& 63) = _
         rw [and31 _ (hlt _ hj)]
-      rw [e]
-      by_cases hin' : cs.getD i 0 &&& cs.getD j 0 ∈ L
-      · exact Or.inl hin'
-      · exact Or.inr (Or.inl ⟨(by intro h; cases h), mem_kids (hsub _ hi) (hsub _ hj) (Or.inl rfl) hin'⟩)
+      exact Or.inr (Or.inl ⟨(by intro h; cases h), _, hsub _ hi, _, hsub _ hj, Or.inl e⟩)
     · simp at hl
   · rcases l with _ | ⟨i, _ | ⟨j, _ | ⟨k, l⟩⟩⟩
     · exact Or.inl h0
@@ -188,18 +235,12 @@ theorem gv_reach (g : Gate) (cs L : List ℕ) (hop : okOp g) (hl : g.inputs.leng
       have e : gv ⟨.or, [i, j]⟩ cs = cs.getD i 0 ||| cs.getD j 0 := by
         show cs.getD i 0 ||| (cs.getD j 0 ||| 0) = _
         rw [Nat.or_zero]
-      rw [e]
-      by_cases hin' : cs.getD i 0 ||| cs.getD j 0 ∈ L
-      · exact Or.inl hin'
-      · exact Or.inr (Or.inl ⟨(by intro h; cases h), mem_kids (hsub _ hi) (hsub _ hj) (Or.inr rfl) hin'⟩)
+      exact Or.inr (Or.inl ⟨(by intro h; cases h), _, hsub _ hi, _, hsub _ hj, Or.inr e⟩)
     · simp at hl
   · rcases l with _ | ⟨i, l⟩
     · exact Or.inl h31
     · have hi := hm i (by simp)
-      show (63 ^^^ cs.getD i 0 ∈ L) ∨ _
-      by_cases hin' : 63 ^^^ cs.getD i 0 ∈ L
-      · exact Or.inl hin'
-      · exact Or.inr (Or.inr ⟨rfl, mem_nkids (hsub _ hi) hin'⟩)
+      exact Or.inr (Or.inr ⟨rfl, _, hsub _ hi, rfl⟩)
 
 theorem colsF_cons (g : Gate) (gs : List Gate) (cs : List ℕ) :
     colsF (g :: gs) cs = colsF gs (cs ++ [gv g cs]) := rfl
@@ -258,43 +299,44 @@ theorem comp (hab : tA ≠ tB) (hac : tA ≠ tC) (hbc : tB ≠ tC) : ∀ (gs : L
       by_cases hnot : g.op = .not
       · rw [nots_cons_not g gs hnot] at hn; omega
       · rw [nots_cons_other g gs hnot] at hn; exact hn
-    rcases gv_reach g cs L hop hl hin hlt hsub h31 h0 with hL | ⟨hno, hkid⟩ | ⟨hno, hkid⟩
-    · have hsub' : ∀ x ∈ cs ++ [gv g cs], x ∈ L := by
+    have inL : gv g cs ∈ L → srch k n L = true := by
+      intro hL
+      have hsub' : ∀ x ∈ cs ++ [gv g cs], x ∈ L := by
         intro x hx
         simp only [List.mem_append, List.mem_singleton] at hx
         rcases hx with hx | rfl
         · exact hsub x hx
         · exact hL
       exact ih _ L k n hlt' hsub' h31 h0 hok' hrb2 (by omega) hn0 ht
-    · obtain ⟨k', rfl⟩ : ∃ k', k = k' + 1 := ⟨k - 1, by omega⟩
-      have hsub' : ∀ x ∈ cs ++ [gv g cs], x ∈ gv g cs :: L := by
-        intro x hx
-        simp only [List.mem_append, List.mem_singleton] at hx
-        rcases hx with hx | rfl
-        · exact List.mem_cons_of_mem _ (hsub x hx)
-        · exact List.mem_cons_self
-      have hs := ih _ (gv g cs :: L) k' n hlt' hsub' (List.mem_cons_of_mem _ h31)
-        (List.mem_cons_of_mem _ h0) hok' hrb2 (by omega) hn0 ht
-      have hm := srch_miss _ _ _ hs
-      have hm2 := miss_step hab hac hbc L (gv g cs)
-      simp only [srch, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true]
-      right
-      exact ⟨by omega, Or.inl ⟨gv g cs, hkid, hs⟩⟩
-    · obtain ⟨k', rfl⟩ : ∃ k', k = k' + 1 := ⟨k - 1, by omega⟩
-      rw [nots_cons_not g gs hno] at hn
-      have hsub' : ∀ x ∈ cs ++ [gv g cs], x ∈ gv g cs :: L := by
-        intro x hx
-        simp only [List.mem_append, List.mem_singleton] at hx
-        rcases hx with hx | rfl
-        · exact List.mem_cons_of_mem _ (hsub x hx)
-        · exact List.mem_cons_self
-      have hs := ih _ (gv g cs :: L) k' (n - 1) hlt' hsub' (List.mem_cons_of_mem _ h31)
-        (List.mem_cons_of_mem _ h0) hok' hrb2 (by omega) (by omega) ht
-      have hm := srch_miss _ _ _ hs
-      have hm2 := miss_step hab hac hbc L (gv g cs)
-      simp only [srch, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true]
-      right
-      exact ⟨by omega, Or.inr ⟨by omega, gv g cs, hkid, hs⟩⟩
+    have hsub' : ∀ x ∈ cs ++ [gv g cs], x ∈ gv g cs :: L := by
+      intro x hx
+      simp only [List.mem_append, List.mem_singleton] at hx
+      rcases hx with hx | rfl
+      · exact List.mem_cons_of_mem _ (hsub x hx)
+      · exact List.mem_cons_self
+    rcases gv_reach g cs L hop hl hin hlt hsub h31 h0 with hL | ⟨hno, x, hx, y, hy, hxy⟩ | ⟨hno, x, hx, hxe⟩
+    · exact inL hL
+    · by_cases hvL : gv g cs ∈ L
+      · exact inL hvL
+      · obtain ⟨k', rfl⟩ : ∃ k', k = k' + 1 := ⟨k - 1, by omega⟩
+        have hs := ih _ (gv g cs :: L) k' n hlt' hsub' (List.mem_cons_of_mem _ h31)
+          (List.mem_cons_of_mem _ h0) hok' hrb2 (by omega) hn0 ht
+        have hm := srch_miss _ _ _ hs
+        have hm2 := miss_step hab hac hbc L (gv g cs)
+        by_cases htt : miss L = k' + 1
+        · exact srch_tight htt _ (tight_target (L := L) (v := gv g cs) (by omega)) hvL (Or.inl ⟨reachM_of hx hy hxy, hs⟩)
+        · exact srch_loose (by omega) htt (Or.inl ⟨_, mem_kids hx hy hxy hvL, hs⟩)
+    · by_cases hvL : gv g cs ∈ L
+      · exact inL hvL
+      · obtain ⟨k', rfl⟩ : ∃ k', k = k' + 1 := ⟨k - 1, by omega⟩
+        rw [nots_cons_not g gs hno] at hn
+        have hs := ih _ (gv g cs :: L) k' (n - 1) hlt' hsub' (List.mem_cons_of_mem _ h31)
+          (List.mem_cons_of_mem _ h0) hok' hrb2 (by omega) (by omega) ht
+        have hm := srch_miss _ _ _ hs
+        have hm2 := miss_step hab hac hbc L (gv g cs)
+        by_cases htt : miss L = k' + 1
+        · exact srch_tight htt _ (tight_target (L := L) (v := gv g cs) (by omega)) hvL (Or.inr ⟨by omega, reachN_of hx hxe, hs⟩)
+        · exact srch_loose (by omega) htt (Or.inr ⟨by omega, _, mem_nkids hx hxe hvL, hs⟩)
 
 def bridgeB (w : List Bool) (cs : List ℕ) (t : ℕ) : Prop :=
   w.length = cs.length ∧ ∀ k, w.getD k false = (cs.getD k 0).testBit t
